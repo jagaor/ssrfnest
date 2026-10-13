@@ -1,0 +1,94 @@
+# Reglas Suricata 7 personalizadas para deteccion de ataques SSRF
+# Proyecto: SSRFNest - Laboratorio educativo Blue Team
+# Autor: Javier Garrido Ortiz
+#
+# Estas reglas se cargan desde suricata.yaml (rule-files).
+# Estan pensadas para el trafico que atraviesa la interfaz del contenedor Suricata,
+# donde se espeja el trafico HTTP gestionado por Nginx hacia la VulnApp.
+#
+# Rangos y puertos relevantes del laboratorio:
+#   - VulnApp (contenedor): 172.28.0.10
+#   - Metadata simulado:   172.28.0.20:9000
+#   - Admin panel interno: 172.28.0.30:9001
+#   - Nginx proxy:         172.28.0.5:8080
+#
+# SIDs reservados para este laboratorio: 9000001 - 9000099
+
+# 1) Peticion HTTP hacia 169.254.0.0/16 (link-local / AWS IMDSv1)
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"SSRFNest - SSRF hacia rango link-local 169.254.0.0/16 (posible IMDSv1)"; \
+    flow:to_server,established; \
+    content:"169.254."; http_uri; nocase; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Server, deployment Perimeter; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000001; rev:1;)
+
+# 2) Peticion HTTP con ruta /latest/meta-data/ en la URI (metadata AWS)
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"SSRFNest - Acceso a /latest/meta-data/ via SSRF (metadata cloud)"; \
+    flow:to_server,established; \
+    content:"/latest/meta-data/"; http_uri; nocase; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Server, deployment Perimeter; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000002; rev:1;)
+
+# 3) Peticion desde la VulnApp hacia rango RFC-1918 172.16.0.0/12
+#    Se filtra por origen en la red interna del laboratorio.
+alert http 172.28.0.10 any -> 172.16.0.0/12 any ( \
+    msg:"SSRFNest - Peticion SSRF desde VulnApp hacia RFC-1918 172.16.0.0/12"; \
+    flow:to_server,established; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Internal, deployment Internal; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000003; rev:1;)
+
+# 4) Cabecera Host apuntando a loopback (127.0.0.1 / localhost)
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"SSRFNest - Cabecera Host hacia loopback (127.0.0.1/localhost) via SSRF"; \
+    flow:to_server,established; \
+    content:"Host|3a 20|"; http_header; nocase; \
+    content:"127.0.0.1"; http_header; nocase; distance:0; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Server, deployment Perimeter; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000004; rev:1;)
+
+# 4b) Variante de la regla anterior para Host: localhost
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"SSRFNest - Cabecera Host hacia localhost via SSRF"; \
+    flow:to_server,established; \
+    content:"Host|3a 20|"; http_header; nocase; \
+    content:"localhost"; http_header; nocase; distance:0; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Server, deployment Perimeter; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000005; rev:1;)
+
+# 5) Esquema file:// presente en la query string (lectura de ficheros locales)
+alert http $HOME_NET any -> $EXTERNAL_NET any ( \
+    msg:"SSRFNest - Esquema file:// en parametro de URL (SSRF local file)"; \
+    flow:to_server,established; \
+    content:"file://"; http_uri; nocase; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Server, deployment Perimeter; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000006; rev:1;)
+
+# 6) Peticion desde la VulnApp hacia puertos internos 9000 (metadata) o 9001 (admin)
+alert http 172.28.0.10 any -> 172.28.0.0/16 9000 ( \
+    msg:"SSRFNest - SSRF desde VulnApp hacia servicio de metadata interno (9000)"; \
+    flow:to_server,established; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Internal, deployment Internal; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000007; rev:1;)
+
+alert http 172.28.0.10 any -> 172.28.0.0/16 9001 ( \
+    msg:"SSRFNest - SSRF desde VulnApp hacia panel de administracion interno (9001)"; \
+    flow:to_server,established; \
+    classtype:web-application-attack; \
+    metadata:service http, attack_target Internal, deployment Internal; \
+    reference:url,wiki/Server-Side_Request_Forgery; \
+    sid:9000008; rev:1;)

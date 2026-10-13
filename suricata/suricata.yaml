@@ -1,0 +1,194 @@
+%YAML 1.1
+---
+# Configuración mínima de Suricata 7 para SSRFNest
+# Laboratorio educativo de detección SSRF (Blue Team)
+# Autor: Javier Garrido Ortiz
+
+# ------------------------------------------------------------------
+# Variables de red
+# ------------------------------------------------------------------
+# HOME_NET define la red interna del laboratorio Docker.
+# Docker Compose asigna a este lab la subred 172.20.0.0/24.
+# EXTERNAL_NET cubre todo lo que no sea HOME_NET (tráfico atacante).
+vars:
+  address-groups:
+    HOME_NET: "[172.20.0.0/24]"
+    EXTERNAL_NET: "!$HOME_NET"
+    HTTP_SERVERS: "$HOME_NET"
+    SMTP_SERVERS: "$HOME_NET"
+    SQL_SERVERS: "$HOME_NET"
+    DNS_SERVERS: "$HOME_NET"
+    TELNET_SERVERS: "$HOME_NET"
+    AIM_SERVERS: "$EXTERNAL_NET"
+    DC_SERVERS: "$HOME_NET"
+    DNP3_SERVER: "$HOME_NET"
+    DNP3_CLIENT: "$HOME_NET"
+    MODBUS_CLIENT: "$HOME_NET"
+    MODBUS_SERVER: "$HOME_NET"
+    ENIP_CLIENT: "$HOME_NET"
+    ENIP_SERVER: "$HOME_NET"
+
+  port-groups:
+    HTTP_PORTS: "8080"
+    SHELLCODE_PORTS: "!80"
+    ORACLE_PORTS: 1521
+    SSH_PORTS: 22
+    DNP3_PORTS: 20000
+    MODBUS_PORTS: 502
+    FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
+    FTP_PORTS: 21
+    GENEVE_PORTS: 6081
+    VXLAN_PORTS: 4789
+    TEREDO_PORTS: 3544
+
+# ------------------------------------------------------------------
+# Configuración por defecto del motor
+# ------------------------------------------------------------------
+default-log-level: info
+
+# ------------------------------------------------------------------
+# Interfaz de captura
+# ------------------------------------------------------------------
+# En el contenedor Suricata usamos af-packet sobre la interfaz eth0
+# (bridge de Docker). El tráfico del proxy Nginx se espeja aquí.
+af-packet:
+  - interface: eth0
+    cluster-id: 99
+    cluster-type: cluster_flow
+    defrag: yes
+    use-mmap: yes
+    tpacket-v3: yes
+    ring-size: 2048
+    block-size: 32768
+    # Copiamos el payload completo para que el detector pueda
+    # analizar el cuerpo HTTP de las peticiones SSRF.
+    snaplen: 65535
+    # Promiscuo activado para capturar tráfico espejado.
+    promisc: yes
+    # Sin BPF filter: queremos ver todo el tráfico del lab.
+    bpf-filter: ""
+
+# ------------------------------------------------------------------
+# Reglas personalizadas SSRF
+# ------------------------------------------------------------------
+# Cargamos únicamente las reglas del laboratorio (ssrf.rules).
+# Las reglas oficiales ET/Open no son necesarias para este ejercicio.
+default-rule-path: /etc/suricata/rules
+
+rule-files:
+  - ssrf.rules
+
+# Clasificación y referencias (mínimas)
+classification-file: /etc/suricata/classification.config
+reference-config-file: /etc/suricata/reference.config
+
+# ------------------------------------------------------------------
+# Salidas (outputs)
+# ------------------------------------------------------------------
+# Generamos eve.json en formato JSON con los tipos de evento que el
+# script src/ssrf_detector.py necesita para correlacionar alertas:
+#   - alert : alertas SSRF disparadas por ssrf.rules
+#   - http  : peticiones HTTP completas (URL, host, método)
+#   - dns   : resoluciones DNS (útil para detectar exfiltración)
+#   - tls   : handshakes TLS (por si el atacante intenta HTTPS)
+#   - flow  : metadatos de flujo para correlación temporal
+outputs:
+  - eve-log:
+      enabled: yes
+      filetype: regular
+      filename: /var/log/suricata/eve.json
+      # Rotación simple por tamaño para no llenar el disco del lab.
+      rotate-interval: 0
+      append: yes
+      community-id: yes
+      community-id-seed: 0
+      types:
+        - alert:
+            # Payload HTTP completo para análisis del detector.
+            payload: yes
+            payload-printable: yes
+            packet: no
+            metadata: yes
+            # Incluimos la regla y su severidad para enriquecer el informe.
+            tagged-packets: no
+        - http:
+            extended: yes
+        - dns:
+            query: yes
+            answer: yes
+        - tls:
+            extended: yes
+        - flow:
+            enabled: yes
+
+  # Log de estadísticas del motor (útil para depurar el lab).
+  - stats:
+      enabled: yes
+      interval: 60
+      filename: /var/log/suricata/stats.log
+      append: yes
+
+  # Log clásico en texto (compatibilidad con herramientas legacy).
+  - fast:
+      enabled: yes
+      filename: /var/log/suricata/fast.log
+      append: yes
+
+# ------------------------------------------------------------------
+# Ajustes varios del motor
+# ------------------------------------------------------------------
+# Desactivamos detección de protocolos que no usamos en el lab.
+app-layer:
+  protocols:
+    tls:
+      enabled: yes
+    http:
+      enabled: yes
+      # Necesario para inspeccionar el parámetro ?url= de /fetch.
+      libhtp:
+        default-config:
+          request-body-limit: 0
+          response-body-limit: 0
+          request-body-minimal-inspect-size: 32kb
+          request-body-inspect-window: 4kb
+          response-body-minimal-inspect-size: 32kb
+          response-body-inspect-window: 16kb
+    dns:
+      enabled: yes
+    ftp:
+      enabled: no
+    smtp:
+      enabled: no
+    ssh:
+      enabled: no
+
+# Sin modo IPS: este contenedor sólo actúa como IDS pasivo.
+# Para convertirlo en IPS en otro escenario, cambiar a "ips".
+runmode: autofp
+
+# Hilos de captura y detección (ajustado al tamaño del lab).
+threading:
+  set-cpu-affinity: no
+  detect-thread-ratio: 1.0
+
+# Buffers de memoria conservadores para no saturar Docker.
+max-pending-packets: 1024
+
+# Desactivamos el modo IPS en el arranque por defecto.
+ips: false
+
+# Log de arranque del motor.
+logging:
+  default-log-level: info
+  outputs:
+    - console:
+        enabled: yes
+        level: info
+    - file:
+        enabled: yes
+        level: info
+        filename: /var/log/suricata/suricata.log
+
+# ------------------------------------------------------------------
+# Fin de la configuración SSRFNest
+# ------------------------------------------------------------------

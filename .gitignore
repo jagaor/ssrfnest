@@ -1,0 +1,51 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+ENV/
+
+# Variables de entorno y secretos
+.env
+.env.*
+!.env.example
+
+# Empaquetado Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Caches de herramientas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs generados por el laboratorio
+*.log
+logs/*.json
+!logs/eve.json.example
+report.json
+reports/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editores e IDEs
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Docker volúmenes locales
+suricata/logs/

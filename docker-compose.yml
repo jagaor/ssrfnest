@@ -1,0 +1,150 @@
+# SSRFNest — Orquestación del laboratorio SSRF
+# Autor: Javier Garrido Ortiz
+#
+# Levanta 5 servicios en una red bridge interna aislada (172.20.0.0/24):
+#   - vulnapp    : aplicación Flask deliberadamente vulnerable a SSRF
+#   - nginx      : proxy inverso expuesto en el host (8080 -> 80)
+#   - metadata   : servicio de metadatos simulado (estilo AWS IMDSv1)
+#   - adminpanel : panel de administración interno, no expuesto al host
+#   - suricata   : IDS pasivo que inspecciona el tráfico del bridge
+#
+# Uso:
+#   docker compose up -d --build
+#   docker compose logs -f suricata
+#   docker compose down -v
+
+name: ssrfnest
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Aplicación Flask vulnerable a SSRF. Es el objetivo del laboratorio.
+  # No se expone directamente al host: solo se accede a través de Nginx.
+  # ---------------------------------------------------------------------------
+  vulnapp:
+    build:
+      context: ./services/vulnapp
+      dockerfile: Dockerfile
+    container_name: ssrfnest_vulnapp
+    hostname: vulnapp
+    restart: unless-stopped
+    environment:
+      # URLs internas usadas por el endpoint /fetch y por la lógica de la app.
+      METADATA_URL: "http://172.20.0.10:9000"
+      ADMIN_URL: "http://172.20.0.11:9001"
+      FLASK_ENV: "production"
+      PYTHONUNBUFFERED: "1"
+    expose:
+      - "5000"
+    networks:
+      ssrfnest_net:
+        ipv4_address: 172.20.0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Proxy inverso Nginx. Único servicio con puerto publicado al host (8080).
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: ssrfnest_nginx
+    hostname: nginx
+    restart: unless-stopped
+    depends_on:
+      vulnapp:
+        condition: service_started
+    ports:
+      - "8080:80"
+    volumes:
+      - ./services/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      ssrfnest_net:
+        ipv4_address: 172.20.0.4
+
+  # ---------------------------------------------------------------------------
+  # Servicio de metadatos simulado. Solo accesible desde la red interna.
+  # ---------------------------------------------------------------------------
+  metadata:
+    build:
+      context: ./services/metadata
+      dockerfile: Dockerfile
+    container_name: ssrfnest_metadata
+    hostname: metadata
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+    expose:
+      - "9000"
+    networks:
+      ssrfnest_net:
+        ipv4_address: 172.20.0.10
+
+  # ---------------------------------------------------------------------------
+  # Panel de administración interno. No debe ser alcanzable desde el host.
+  # ---------------------------------------------------------------------------
+  adminpanel:
+    build:
+      context: ./services/adminpanel
+      dockerfile: Dockerfile
+    container_name: ssrfnest_adminpanel
+    hostname: adminpanel
+    restart: unless-stopped
+    environment:
+      PYTHONUNBUFFERED: "1"
+    expose:
+      - "9001"
+    networks:
+      ssrfnest_net:
+        ipv4_address: 172.20.0.11
+
+  # ---------------------------------------------------------------------------
+  # Suricata 7 en modo IDS. Sniffa el bridge interno y escribe eve.json.
+  # Se ejecuta con network_mode host para poder capturar el tráfico del
+  # bridge docker (ssrfnest_net) desde la interfaz del host.
+  # ---------------------------------------------------------------------------
+  suricata:
+    image: jasonish/suricata:7.0
+    container_name: ssrfnest_suricata
+    hostname: suricata
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYS_NICE
+    depends_on:
+      nginx:
+        condition: service_started
+    volumes:
+      - ./suricata/rules/ssrf.rules:/var/lib/suricata/rules/ssrf.rules:ro
+      - ./suricata/suricata.yaml:/etc/suricata/suricata.yaml:ro
+      - ./logs:/var/log/suricata
+    command:
+      - "-i"
+      - "${SURICATA_IFACE:-br-ssrfnest}"
+      - "-c"
+      - "/etc/suricata/suricata.yaml"
+      - "--set"
+      - "default-rule-path=/var/lib/suricata/rules"
+      - "-S"
+      - "/var/lib/suricata/rules/ssrf.rules"
+
+# ---------------------------------------------------------------------------
+# Red bridge interna aislada. Subnet fija para que las IPs sean predecibles
+# y las reglas de Suricata puedan referenciarlas.
+# ---------------------------------------------------------------------------
+networks:
+  ssrfnest_net:
+    name: ssrfnest_net
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.20.0.0/24
+          gateway: 172.20.0.1
+    driver_opts:
+      com.docker.network.bridge.name: br-ssrfnest
